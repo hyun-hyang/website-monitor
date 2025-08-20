@@ -15,6 +15,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
+from collections import defaultdict
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -167,15 +168,22 @@ class WebsiteMonitor:
             return None
     
     def parse_notices(self, html, website_config):
-        soup = BeautifulSoup(html, 'lxml')  # 가능하면 lxml
+        soup = BeautifulSoup(html, 'lxml')
         notices = []
 
         try:
-            items = soup.select(website_config['selector'])
-            for el in items[:10]:
+            elems = soup.select(website_config['selector'])  # ← items → elems로 이름 변경
+            take_n = website_config.get('max_items', 20)
+            logger.info(f"[{website_config['name']}] matched={len(elems)} take={take_n} selector='{website_config['selector']}'")
 
+            for el in elems[:website_config.get('max_items', 20)]:
+                # 고정글 판정
+                pinned_by_td = el.select_one('td.top-notice') is not None
+                has_cate00 = any('cate00' in (sp.get('class') or []) for sp in el.select('span.cate'))
+                is_pinned = pinned_by_td or has_cate00
+
+                # 카테고리
                 cate_sel = website_config.get('category_selector')
-                # 1) 카테고리 추출 (없으면 "")
                 category = ""
                 if cate_sel:
                     ce = el.select_one(cate_sel)
@@ -201,7 +209,7 @@ class WebsiteMonitor:
                     else:
                         link = href
 
-                # 날짜/조회수: td 인덱스가 없다면 폴백
+                # 날짜/조회수
                 date = ""
                 views = ""
                 try:
@@ -215,13 +223,11 @@ class WebsiteMonitor:
                 if not date:
                     date = self.extract_date(el)
                 if not views:
-                    # 흔한 패턴 폴백
                     for sel in ['.views', '.hit', '.count', '[data-views]']:
                         ve = el.select_one(sel)
                         if ve:
                             views = ve.get_text(strip=True) if ve.text else ve.get('data-views', '')
                             break
-                
                 views = self.normalize_views(views)
 
                 notices.append({
@@ -229,15 +235,25 @@ class WebsiteMonitor:
                     'link': link,
                     'date': date,
                     'views': views,
-                    "category": category,
-                    'hash': hashlib.md5(f"{title}{link}".encode()).hexdigest()
+                    'category': category,
+                    'hash': hashlib.md5(f"{title}{link}".encode()).hexdigest(),
+                    'is_pinned': is_pinned
                 })
+
         except Exception as e:
             logger.error(f"HTML 파싱 실패: {e}")
 
         return notices
     
-
+    def _group_by_category(self, notices):
+        """카테고리 라벨로 그룹핑. 없으면 '기타'."""
+        groups = defaultdict(list)
+        for n in notices:
+            key = (n.get("category") or "").strip()
+            groups[key].append(n)
+        # 순서: 발견된 순서 그대로
+        ordered_keys = list(groups.keys())
+        return ordered_keys, groups
 
     def normalize_views(self, s: str) -> str:
         """'Views 3,921', '조회수 3921회' 같은 문자열에서 숫자만 추출."""
@@ -272,99 +288,91 @@ class WebsiteMonitor:
                 return date_elem.get_text(strip=True)
         
         return datetime.now().strftime('%Y-%m-%d')
-    
+
     def send_slack_notification(self, website_name, new_notices):
-        """슬랙 알림 전송"""
         webhook_url = self.config['slack_webhook_url']
-        
         if webhook_url == "YOUR_SLACK_WEBHOOK_URL_HERE":
             logger.warning("슬랙 웹훅 URL이 설정되지 않았습니다.")
             return
-        
+
         try:
-            # 슬랙 메시지 구성
-            text = f"🔔 *{website_name}*에 새로운 공지사항이 있습니다!"
-            
-            blocks = [
-                {
-                    "type": "header",
-                    "text": {
-                        "type": "plain_text",
-                        "text": f"📢 {website_name} 새 공지사항"
-                    }
-                }
-            ]
-            
-            for notice in new_notices[:5]:  # 최대 5개만 표시
-                blocks.append({
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"{notice['category']}\n• <{notice['link']}|{notice['title']}>\n   📅 {notice['date']}\t Views {notice['views']}"
-                    }
-                })
-            
-            if len(new_notices) > 5:
-                blocks.append({
-                    "type": "context",
-                    "elements": [
-                        {
+            per_k = int(self.config.get("slack_per_category_k", 5))
+            show_date = bool(self.config.get("slack_show_date", True))
+            show_views = bool(self.config.get("slack_show_views", True))
+
+            keys, groups = self._group_by_category(new_notices)
+
+            blocks = [{
+                "type": "header",
+                "text": {"type": "plain_text", "text": f"📢 {website_name} 새 공지사항"}
+            }]
+
+            for cat in keys:
+                if cat:  # 빈 카테고리는 소제목 스킵
+                    blocks.append({
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"*{cat}*"}
+                    })
+
+                for n in groups[cat][:per_k]:
+                    # 고정글이면 제목 앞에 이모지
+                    title_disp = f"🌟 {n['title']}" if n.get('is_pinned') else n['title']
+
+                    date_txt = f"📅 {n['date']}" if (show_date and n.get('date')) else ""
+                    views_txt = f"Views {n['views']}" if (show_views and n.get('views')) else ""
+                    meta = "   ".join([t for t in [date_txt, views_txt] if t])
+
+                    blocks.append({
+                        "type": "section",
+                        "text": {
                             "type": "mrkdwn",
-                            "text": f"그 외 {len(new_notices) - 5}개의 새 공지사항이 더 있습니다."
+                            "text": f"• <{n['link']}|{title_disp}>" + (f"\n   {meta}" if meta else "")
                         }
-                    ]
-                })
-            
-            payload = {
-                "text": text,
-                "blocks": blocks
-            }
-            
-            response = requests.post(webhook_url, json=payload)
-            response.raise_for_status()
-            logger.info(f"슬랙 알림 전송 완료: {len(new_notices)}개 공지사항")
-            
+                    })
+
+            payload = {"text": f"🔔 *{website_name}*에 새로운 공지사항!", "blocks": blocks}
+            resp = requests.post(webhook_url, json=payload)
+            resp.raise_for_status()
+            logger.info(f"슬랙 알림 전송 완료: {len(new_notices)}개 (카테고리 {len(keys)}개)")
         except requests.RequestException as e:
             logger.error(f"슬랙 알림 전송 실패: {e}")
     
     def check_website(self, website_config):
-        """특정 웹사이트 체크"""
         if not website_config.get('enabled', True):
             return
-        
-        website_name = website_config['name']
-        url = website_config['url']
-        
-        logger.info(f"{website_name} 체크 중...")
-        
-        # 웹페이지 내용 가져오기
+
+        name, url = website_config['name'], website_config['url']
+        logger.info(f"{name} 체크 중...")
+
         html = self.get_page_content(url, website_config)
         if not html:
             return
-        
-        # 공지사항 파싱
-        current_notices = self.parse_notices(html, website_config)
-        if not current_notices:
-            logger.warning(f"{website_name}: 공지사항을 찾을 수 없습니다.")
+
+        all_notices = self.parse_notices(html, website_config)
+
+        # 고정글도 일반글과 합쳐서 동일하게 처리
+        all_notices
+        if not all_notices:
+            logger.warning(f"{name}: 공지사항을 찾을 수 없습니다.")
             return
-        
-        # 이전 데이터와 비교
+
         site_key = hashlib.md5(url.encode()).hexdigest()
-        previous_hashes = set(self.previous_data.get(site_key, []))
-        current_hashes = {notice['hash'] for notice in current_notices}
-        
-        # 새로운 공지사항 찾기
-        new_hashes = current_hashes - previous_hashes
-        new_notices = [notice for notice in current_notices if notice['hash'] in new_hashes]
-        
+        site_data = self.previous_data.get(site_key, {})
+        prev_hashes = set(site_data.get("hashes", []))
+
+        curr_hashes = {n['hash'] for n in all_notices}
+        new_hashes = curr_hashes - prev_hashes
+        new_notices = [n for n in all_notices if n['hash'] in new_hashes]
+
         if new_notices:
-            logger.info(f"{website_name}: {len(new_notices)}개의 새 공지사항 발견")
-            self.send_slack_notification(website_name, new_notices)
+            logger.info(f"{name}: {len(new_notices)}개의 새 공지사항 발견")
+            self.send_slack_notification(name, new_notices)
         else:
-            logger.info(f"{website_name}: 새 공지사항 없음")
-        
-        # 현재 데이터 저장 (최대 50개까지만)
-        self.previous_data[site_key] = list(current_hashes)[:50]
+            logger.info(f"{name}: 새 공지사항 없음")
+
+        # 고정/일반 구분 없이 본 것들 저장
+        site_data["hashes"] = list(curr_hashes)[:50]
+        self.previous_data[site_key] = site_data
     
     def run_once(self):
         """한 번 실행"""
