@@ -250,9 +250,17 @@ class WebsiteMonitor:
         groups = defaultdict(list)
         for n in notices:
             key = (n.get("category") or "").strip()
+            if not key:
+                key = "기타"   # 카테고리 없으면 기타
             groups[key].append(n)
-        # 순서: 발견된 순서 그대로
-        ordered_keys = list(groups.keys())
+
+        # 원하는 순서
+        order = ["입학", "장학", "학사", "BK비교과", "기타"]
+
+        # groups에 있는 key들 중 order에 정의된 건 순서대로, 나머지는 마지막에
+        ordered_keys = [cat for cat in order if cat in groups] + \
+                    [cat for cat in groups if cat not in order]
+
         return ordered_keys, groups
 
     def normalize_views(self, s: str) -> str:
@@ -296,7 +304,6 @@ class WebsiteMonitor:
             return
 
         try:
-            per_k = int(self.config.get("slack_per_category_k", 5))
             show_date = bool(self.config.get("slack_show_date", True))
             show_views = bool(self.config.get("slack_show_views", True))
 
@@ -314,7 +321,7 @@ class WebsiteMonitor:
                         "text": {"type": "mrkdwn", "text": f"*{cat}*"}
                     })
 
-                for n in groups[cat][:per_k]:
+                for n in groups[cat]:
                     # 고정글이면 제목 앞에 이모지
                     title_disp = f"🌟 {n['title']}" if n.get('is_pinned') else n['title']
 
