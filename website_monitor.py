@@ -8,10 +8,12 @@ from datetime import datetime
 import logging
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
+from webdriver_manager.chrome import ChromeDriverManager
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,7 +27,7 @@ class WebsiteMonitor:
         self.driver = None
         
     def setup_selenium_driver(self):
-        """Selenium 드라이버 설정"""
+        """Selenium 드라이버 설정 (자동 설치)"""
         if self.driver:
             return self.driver
             
@@ -37,12 +39,20 @@ class WebsiteMonitor:
         options.add_argument('--window-size=1920,1080')
         options.add_argument(f'--user-agent={self.config["user_agent"]}')
         
+        # SSL 인증서 오류 무시 (일부 사이트에서 필요)
+        options.add_argument('--ignore-certificate-errors')
+        options.add_argument('--ignore-ssl-errors')
+        
         try:
-            self.driver = webdriver.Chrome(options=options)
+            # webdriver-manager로 자동 ChromeDriver 설치
+            logger.info("ChromeDriver 자동 설치 중...")
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=options)
+            logger.info("ChromeDriver 설정 완료!")
             return self.driver
-        except WebDriverException as e:
+        except Exception as e:
             logger.error(f"Chrome 드라이버 초기화 실패: {e}")
-            logger.info("ChromeDriver가 설치되어 있는지 확인해주세요.")
+            logger.info("Chrome 브라우저가 설치되어 있는지 확인해주세요.")
             return None
     
     def close_selenium_driver(self):
@@ -156,55 +166,65 @@ class WebsiteMonitor:
             return None
     
     def parse_notices(self, html, website_config):
-        """공지사항 파싱"""
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, 'lxml')  # 가능하면 lxml
         notices = []
-        
-        try:
-            # CSS 선택자로 공지사항 목록 찾기
-            notice_elements = soup.select(website_config['selector'])
-            
-            for element in notice_elements[:10]:  # 최신 10개만
-                try:
-                    # 제목 추출
-                    title_elem = element.select_one(website_config['title_selector'])
-                    title = title_elem.get_text(strip=True) if title_elem else "제목 없음"
-                    
-                    # 링크 추출
-                    link_elem = element.select_one(website_config['link_selector'])
-                    if link_elem:
-                        link = link_elem.attrs['href']
-                        # 상대 경로인 경우 절대 경로로 변환
-                        if link.startswith('/'):
-                            from urllib.parse import urljoin
-                            link = urljoin(website_config['url'], link)
-                        elif not link.startswith('http'):
-                            link = f"{website_config['url']}{link}"
-                    else:
-                        link = ""
-                    
-                    # 날짜 추출 (선택적)
-                    date = element.select('td')[4].text
 
-                    # 조회수 추출
-                    views = element.select('td')[3].text
+        try:
+            items = soup.select(website_config['selector'])
+            for el in items[:10]:
+                # 제목
+                title_elem = el.select_one(website_config.get('title_selector', 'a'))
+                title = title_elem.get_text(strip=True) if title_elem else "제목 없음"
+
+                # 링크
+                link = ""
+                link_elem = el.select_one(website_config.get('link_selector', 'a'))
+                if link_elem and link_elem.has_attr('href'):
+                    href = link_elem['href']
+                    if href.startswith('/'):
+                        from urllib.parse import urljoin, urlparse
+                        base = f"{urlparse(website_config['url']).scheme}://{urlparse(website_config['url']).netloc}"
+                        link = urljoin(base, href)
+                    elif href.startswith('?') or not href.startswith('http'):
+                        from urllib.parse import urljoin
+                        link = urljoin(website_config['url'], href)
+                    else:
+                        link = href
+
+                # 날짜/조회수: td 인덱스가 없다면 폴백
+                date = ""
+                views = ""
+                try:
+                    tds = el.select('td')
+                    if len(tds) >= 5:
+                        date = tds[4].get_text(strip=True)
+                        views = tds[3].get_text(strip=True)
+                except Exception:
+                    pass
+
+                if not date:
+                    date = self.extract_date(el)
+                if not views:
+                    # 흔한 패턴 폴백
+                    for sel in ['.views', '.hit', '.count', '[data-views]']:
+                        ve = el.select_one(sel)
+                        if ve:
+                            views = ve.get_text(strip=True) if ve.text else ve.get('data-views', '')
+                            break
+
+                if views.startswith("Views"):
                     
-                    notice = {
-                        'title': title,
-                        'link': link,
-                        'date': date,
-                        'views': views,
-                        'hash': hashlib.md5(f"{title}{link}".encode()).hexdigest()
-                    }
-                    notices.append(notice)
-                    
-                except Exception as e:
-                    logger.warning(f"공지사항 파싱 오류: {e}")
-                    continue
-                    
+
+                notices.append({
+                    'title': title,
+                    'link': link,
+                    'date': date,
+                    'views': views,
+                    'hash': hashlib.md5(f"{title}{link}".encode()).hexdigest()
+                })
         except Exception as e:
             logger.error(f"HTML 파싱 실패: {e}")
-            
+
         return notices
     
     def extract_date(self, element):
