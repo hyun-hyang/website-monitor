@@ -173,23 +173,27 @@ class WebsiteMonitor:
                     # 링크 추출
                     link_elem = element.select_one(website_config['link_selector'])
                     if link_elem:
-                        link = link_elem.get('href', '')
+                        link = link_elem.attrs['href']
                         # 상대 경로인 경우 절대 경로로 변환
                         if link.startswith('/'):
                             from urllib.parse import urljoin
                             link = urljoin(website_config['url'], link)
                         elif not link.startswith('http'):
-                            link = f"{website_config['url']}/{link}"
+                            link = f"{website_config['url']}{link}"
                     else:
                         link = ""
                     
                     # 날짜 추출 (선택적)
-                    date = self.extract_date(element)
+                    date = element.select('td')[4].text
+
+                    # 조회수 추출
+                    views = element.select('td')[3].text
                     
                     notice = {
                         'title': title,
                         'link': link,
                         'date': date,
+                        'views': views,
                         'hash': hashlib.md5(f"{title}{link}".encode()).hexdigest()
                     }
                     notices.append(notice)
@@ -242,7 +246,7 @@ class WebsiteMonitor:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"• <{notice['link']}|{notice['title']}>\n   📅 {notice['date']}"
+                        "text": f"• <{notice['link']}|{notice['title']}>\n   📅 {notice['date']}\t Views: {notice['views']}"
                     }
                 })
             
