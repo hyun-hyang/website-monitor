@@ -4,6 +4,7 @@ import json
 import time
 import hashlib
 import os
+import re
 from datetime import datetime
 import logging
 from selenium import webdriver
@@ -172,6 +173,15 @@ class WebsiteMonitor:
         try:
             items = soup.select(website_config['selector'])
             for el in items[:10]:
+
+                cate_sel = website_config.get('category_selector')
+                # 1) 카테고리 추출 (없으면 "")
+                category = ""
+                if cate_sel:
+                    ce = el.select_one(cate_sel)
+                    if ce:
+                        category = ce.get_text(strip=True)
+
                 # 제목
                 title_elem = el.select_one(website_config.get('title_selector', 'a'))
                 title = title_elem.get_text(strip=True) if title_elem else "제목 없음"
@@ -211,15 +221,15 @@ class WebsiteMonitor:
                         if ve:
                             views = ve.get_text(strip=True) if ve.text else ve.get('data-views', '')
                             break
-
-                if views.startswith("Views"):
-                    
+                
+                views = self.normalize_views(views)
 
                 notices.append({
                     'title': title,
                     'link': link,
                     'date': date,
                     'views': views,
+                    "category": category,
                     'hash': hashlib.md5(f"{title}{link}".encode()).hexdigest()
                 })
         except Exception as e:
@@ -227,6 +237,30 @@ class WebsiteMonitor:
 
         return notices
     
+
+
+    def normalize_views(self, s: str) -> str:
+        """'Views 3,921', '조회수 3921회' 같은 문자열에서 숫자만 추출."""
+        if not s:
+            return ""
+        s = s.strip()
+        # 라벨 제거 (영/한)
+        s = re.sub(r'(?i)\b(views?|hits?|조회수|조회)\b[:：]?\s*', '', s)
+        # '회' 같은 접미사 제거
+        s = re.sub(r'[^\d,\.]', ' ', s)
+        # 첫 숫자 토큰만 사용
+        m = re.search(r'(\d[\d,\.]*)', s)
+        if not m:
+            return ""
+        num = m.group(1)
+        # 천단위/소수점 정리 → 정수 문자열로
+        num = num.replace(',', '')
+        try:
+            num_int = int(float(num))
+            return str(num_int)
+        except ValueError:
+            return num  # 혹시 모를 예외 시 원본 숫자 문자열
+
     def extract_date(self, element):
         """날짜 추출 (사이트마다 다를 수 있음)"""
         # 일반적인 날짜 패턴 찾기
@@ -266,7 +300,7 @@ class WebsiteMonitor:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"• <{notice['link']}|{notice['title']}>\n   📅 {notice['date']}\t Views: {notice['views']}"
+                        "text": f"{notice['category']}\n• <{notice['link']}|{notice['title']}>\n   📅 {notice['date']}\t Views {notice['views']}"
                     }
                 })
             
