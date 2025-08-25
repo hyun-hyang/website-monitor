@@ -22,7 +22,6 @@ import sys
 
 
 # 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class WebsiteMonitor:
@@ -44,6 +43,7 @@ class WebsiteMonitor:
         self.data_file = os.path.join(self.BASE_DIR, 'previous_data.json')
         self.previous_data = self.load_previous_data()
         self.driver = None
+        self._cd_log_file = None
         
     def setup_selenium_driver(self):
         """Selenium 드라이버 설정 (자동 설치)"""
@@ -66,9 +66,9 @@ class WebsiteMonitor:
             # webdriver-manager로 자동 ChromeDriver 설치
             logger.info("ChromeDriver 자동 설치 중...")
             cd_log_path = os.path.join(self.LOG_DIR, "chromedriver.log")
-            cd_log_file = open(cd_log_path, "a", encoding="utf-8")
-            service = Service(ChromeDriverManager().install(), log_output=cd_log_file)
-
+            if self._cd_log_file is None or self._cd_log_file.closed:
+                self._cd_log_file = open(cd_log_path, "a", encoding="utf-8")
+            service = Service(ChromeDriverManager().install(), log_output=self._cd_log_file)
             self.driver = webdriver.Chrome(service=service, options=options)
             logger.info("ChromeDriver 설정 완료!")
             return self.driver
@@ -77,12 +77,18 @@ class WebsiteMonitor:
             logger.error(f"Chrome 드라이버 초기화 실패: {e}")
             logger.info("Chrome 브라우저가 설치되어 있는지 확인해주세요.")
             return None
-    
+
     def close_selenium_driver(self):
         """Selenium 드라이버 종료"""
         if self.driver:
             self.driver.quit()
             self.driver = None
+        if getattr(self, "_cd_log_file", None):
+            try:
+                self._cd_log_file.close()
+            except Exception:
+                pass
+            self._cd_log_file = None
         
     def load_config(self, config_file):
         """설정 파일 로드"""
@@ -455,6 +461,8 @@ class WebsiteMonitor:
         fh.setLevel(logging.INFO)
         fh.setFormatter(fmt)
         logger.addHandler(fh)
+
+        logger.propagate = False
 
         # 시끄러운 서드파티 로거 소음 낮추기
         logging.getLogger("urllib3").setLevel(logging.WARNING)
