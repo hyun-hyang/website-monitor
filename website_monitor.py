@@ -16,6 +16,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
 from collections import defaultdict
+from logging.handlers import TimedRotatingFileHandler
+import signal
+import sys
+
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,8 +27,21 @@ logger = logging.getLogger(__name__)
 
 class WebsiteMonitor:
     def __init__(self, config_file='config.json'):
-        self.config = self.load_config(config_file)
-        self.data_file = 'previous_data.json'
+        # 프로젝트 절대 경로 고정
+        self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        self.LOG_DIR = os.path.join(self.BASE_DIR, "logs")
+        os.makedirs(self.LOG_DIR, exist_ok=True)
+
+        # 로깅 셋업
+        self._setup_logging()
+
+        # 종료 신호 핸들러 (강제 종료 대비)
+        signal.signal(signal.SIGTERM, self._graceful_exit)
+        signal.signal(signal.SIGINT, self._graceful_exit)
+
+        # 기존 초기화
+        self.config = self.load_config(os.path.join(self.BASE_DIR, config_file))
+        self.data_file = os.path.join(self.BASE_DIR, 'previous_data.json')
         self.previous_data = self.load_previous_data()
         self.driver = None
         
@@ -48,10 +65,14 @@ class WebsiteMonitor:
         try:
             # webdriver-manager로 자동 ChromeDriver 설치
             logger.info("ChromeDriver 자동 설치 중...")
-            service = Service(ChromeDriverManager().install())
+            cd_log_path = os.path.join(self.LOG_DIR, "chromedriver.log")
+            cd_log_file = open(cd_log_path, "a", encoding="utf-8")
+            service = Service(ChromeDriverManager().install(), log_output=cd_log_file)
+
             self.driver = webdriver.Chrome(service=service, options=options)
             logger.info("ChromeDriver 설정 완료!")
             return self.driver
+            
         except Exception as e:
             logger.error(f"Chrome 드라이버 초기화 실패: {e}")
             logger.info("Chrome 브라우저가 설치되어 있는지 확인해주세요.")
@@ -118,54 +139,43 @@ class WebsiteMonitor:
             return self.get_page_content_requests(url, headers)
     
     def get_page_content_requests(self, url, headers=None):
-        """Requests로 페이지 내용 가져오기"""
+        """Requests로 페이지 내용 가져오기"""        
         if not headers:
             headers = {'User-Agent': self.config['user_agent']}
+        for attempt in (1, 2):
+            try:
+                r = requests.get(url, headers=headers, timeout=10)
+                r.raise_for_status()
+                return r.text
+            except requests.RequestException as e:
+                logger.warning(f"페이지 요청 실패 {url} (시도 {attempt}): {e}")
+                time.sleep(1)
+        logger.error(f"페이지 요청 최종 실패: {url}")
+        return None
         
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            return response.text
-        except requests.RequestException as e:
-            logger.error(f"페이지 요청 실패 {url}: {e}")
-            return None
-    
     def get_page_content_selenium(self, url, website_config):
         """Selenium으로 페이지 내용 가져오기"""
-        driver = self.setup_selenium_driver()
-        if not driver:
-            return None
-        
-        try:
-            logger.info(f"Selenium으로 페이지 로딩: {url}")
-            driver.get(url)
-            
-            # 특정 요소가 로드될 때까지 대기
-            wait_selector = website_config.get('wait_selector')
-            wait_timeout = website_config.get('wait_timeout', 10)
-            
-            if wait_selector:
-                try:
+        for attempt in (1, 2):
+            driver = self.setup_selenium_driver()
+            if not driver:
+                return None
+            try:
+                logger.info(f"Selenium으로 페이지 로딩: {url} (attempt {attempt})")
+                driver.get(url)
+                wait_selector = website_config.get('wait_selector')
+                wait_timeout = website_config.get('wait_timeout', 10)
+                if wait_selector:
                     WebDriverWait(driver, wait_timeout).until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
                     )
-                    logger.info(f"요소 로딩 완료: {wait_selector}")
-                except TimeoutException:
-                    logger.warning(f"요소 로딩 타임아웃: {wait_selector}")
-            else:
-                # 기본 대기
-                time.sleep(3)
-            
-            # 추가 스크롤 (무한 스크롤 사이트 대응)
-            if website_config.get('scroll_page', False):
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
-            
-            return driver.page_source
-            
-        except WebDriverException as e:
-            logger.error(f"Selenium 페이지 로딩 실패 {url}: {e}")
-            return None
+                # optional: scroll 등
+                return driver.page_source
+            except WebDriverException as e:
+                logger.warning(f"Selenium 로딩 실패(시도 {attempt}): {e}")
+                self.close_selenium_driver()
+                time.sleep(1)
+        logger.error("Selenium 재시도 실패")
+        return None
     
     def parse_notices(self, html, website_config):
         soup = BeautifulSoup(html, 'lxml')
@@ -357,8 +367,6 @@ class WebsiteMonitor:
 
         all_notices = self.parse_notices(html, website_config)
 
-        # 고정글도 일반글과 합쳐서 동일하게 처리
-        all_notices
         if not all_notices:
             logger.warning(f"{name}: 공지사항을 찾을 수 없습니다.")
             return
@@ -401,9 +409,17 @@ class WebsiteMonitor:
         logger.info(f"지속 모니터링 시작 (간격: {interval}초)")
         
         try:
+            recycle_every = int(self.config.get("driver_recycle_every", 200))  # 200회마다 재생성
+            loop_count = 0
+
             while True:
                 try:
                     self.run_once()
+                    loop_count += 1
+                    if recycle_every > 0 and loop_count % recycle_every == 0:
+                        logger.info(f"루프 {loop_count}회차 → 드라이버 재생성")
+                        self.close_selenium_driver()
+                    interval = self.config['check_interval']
                     logger.info(f"{interval}초 후 다시 체크...")
                     time.sleep(interval)
                 except KeyboardInterrupt:
@@ -411,10 +427,50 @@ class WebsiteMonitor:
                     break
                 except Exception as e:
                     logger.error(f"예상치 못한 오류: {e}")
-                    time.sleep(60)  # 오류 시 1분 대기
+                    # 백오프
+                    time.sleep(60)
         finally:
             # Selenium 드라이버 정리
             self.close_selenium_driver()
+
+    def _setup_logging(self):
+        # 콘솔 + 파일(자정마다 롤오버, 최근 7일 보관)
+        logger.setLevel(logging.INFO)
+
+        # 기존 핸들러 제거(중복 방지)
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+
+        fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setLevel(logging.INFO)
+        ch.setFormatter(fmt)
+        logger.addHandler(ch)
+
+        fh = TimedRotatingFileHandler(
+            filename=os.path.join(self.LOG_DIR, "app.log"),
+            when="midnight", interval=1, backupCount=7, encoding="utf-8"
+        )
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+
+        # 시끄러운 서드파티 로거 소음 낮추기
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
+        logging.getLogger("WDM").setLevel(logging.WARNING)  # webdriver_manager
+
+    def _graceful_exit(self, signum, frame):
+        logger.info(f"종료 신호 수신({signum}) → 상태 저장 및 자원 정리")
+        try:
+            self.save_previous_data()
+        except Exception as e:
+            logger.error(f"상태 저장 실패: {e}")
+        try:
+            self.close_selenium_driver()
+        except Exception as e:
+            logger.error(f"드라이버 종료 실패: {e}")
+        sys.exit(0)
 
 def main():
     """메인 함수"""
