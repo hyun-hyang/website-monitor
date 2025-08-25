@@ -251,7 +251,7 @@ class WebsiteMonitor:
         for n in notices:
             key = (n.get("category") or "").strip()
             if not key:
-                key = "기타"   # 카테고리 없으면 기타
+                key = ""   # 카테고리 없으면 기타
             groups[key].append(n)
 
         # 원하는 순서
