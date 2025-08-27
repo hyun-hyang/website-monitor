@@ -3,3 +3,4 @@ beautifulsoup4>=4.12
 lxml>=5.2           # bs4 파서 성능/안정성 ↑ (옵션이지만 추천)
 selenium>=4.23
 webdriver-manager>=4.0
+python-dotenv>=1.0
