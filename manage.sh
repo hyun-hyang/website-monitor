@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+set -a
+[ -f "$(dirname "$0")/.env" ] && source "$(dirname "$0")/.env"
+set +a
+
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -70,18 +75,16 @@ restart() {
   start
 }
 
-tail() {
-  tail -n 200 -f "$LOGDIR/daemon.log"
-}
+logs() { /usr/bin/tail -n 200 -f "$LOGDIR/daemon.log"; }
 
 case "${1:-}" in
   start) start ;;
   stop) stop ;;
   restart) restart ;;
   status) status ;;
-  tail) tail ;;
+  logs) logs ;;          # ← 변경
   *)
-    echo "Usage: $0 {start|stop|restart|status|tail}"
+    echo "Usage: $0 {start|stop|restart|status|logs}"
     exit 1
     ;;
 esac

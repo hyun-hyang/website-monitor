@@ -19,6 +19,7 @@ from collections import defaultdict
 from logging.handlers import TimedRotatingFileHandler
 import signal
 import sys
+from dotenv import load_dotenv
 
 
 # 로깅 설정
@@ -28,8 +29,28 @@ class WebsiteMonitor:
     def __init__(self, config_file='config.json'):
         # 프로젝트 절대 경로 고정
         self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+        # .env 로드
+        load_dotenv(os.path.join(self.BASE_DIR, '.env'))
+
+        # 로그/기타 초기화...
         self.LOG_DIR = os.path.join(self.BASE_DIR, "logs")
         os.makedirs(self.LOG_DIR, exist_ok=True)
+
+        # config 불러오기
+        self.config = self.load_config(os.path.join(self.BASE_DIR, config_file))
+
+        # env 우선 적용 (config에 기본값이 있고, env가 있으면 env로 덮기)
+        wh = os.getenv("SLACK_WEBHOOK_URL")
+        if wh:
+            self.config["slack_webhook_url"] = wh
+
+        ua = os.getenv("USER_AGENT")
+        if ua:
+            self.config["user_agent"] = ua
+
+        # 필요시 채널 ID 등을 config로 전달하고 쓸 수 있음
+        self.slack_channel_id = os.getenv("SLACK_CHANNEL_ID")  # 필요하면 사용
 
         # 로깅 셋업
         self._setup_logging()
@@ -39,7 +60,6 @@ class WebsiteMonitor:
         signal.signal(signal.SIGINT, self._graceful_exit)
 
         # 기존 초기화
-        self.config = self.load_config(os.path.join(self.BASE_DIR, config_file))
         self.data_file = os.path.join(self.BASE_DIR, 'previous_data.json')
         self.previous_data = self.load_previous_data()
         self.driver = None
@@ -192,7 +212,7 @@ class WebsiteMonitor:
             take_n = website_config.get('max_items', 20)
             logger.info(f"[{website_config['name']}] matched={len(elems)} take={take_n} selector='{website_config['selector']}'")
 
-            for el in elems[:website_config.get('max_items', 20)]:
+            for el in elems[:take_n]:
                 # 고정글 판정
                 pinned_by_td = el.select_one('td.top-notice') is not None
                 has_cate00 = any('cate00' in (sp.get('class') or []) for sp in el.select('span.cate'))
@@ -316,7 +336,7 @@ class WebsiteMonitor:
     def send_slack_notification(self, website_name, new_notices):
         webhook_url = self.config['slack_webhook_url']
         if webhook_url == "YOUR_SLACK_WEBHOOK_URL_HERE":
-            logger.warning("슬랙 웹훅 URL이 설정되지 않았습니다.")
+            logger.warning("슬랙 웹훅 URL이 없습니다. .env의 SLACK_WEBHOOK_URL 또는 config.json을 설정하세요.")
             return
 
         try:
