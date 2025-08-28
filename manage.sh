@@ -65,8 +65,10 @@ stop() {
 status() {
   if is_running; then
     echo "Running (PID $(cat "$PIDFILE"))."
+    return 0   # 성공
   else
     echo "Not running."
+    return 1   # 실패
   fi
 }
 
