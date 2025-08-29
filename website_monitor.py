@@ -21,6 +21,7 @@ import signal
 import sys
 from dotenv import load_dotenv
 import fcntl
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 
 # 로깅 설정
@@ -277,6 +278,9 @@ class WebsiteMonitor:
                             views = ve.get_text(strip=True) if ve.text else ve.get('data-views', '')
                             break
                 views = self.normalize_views(views)
+                
+                title_norm = self._normalize_title(title)
+                link_norm = self._normalize_url(link)
 
                 notices.append({
                     'title': title,
@@ -284,13 +288,18 @@ class WebsiteMonitor:
                     'date': date,
                     'views': views,
                     'category': category,
-                    'hash': hashlib.md5(f"{title}{link}".encode()).hexdigest(),
+                    'hash': hashlib.md5(f"{title_norm}{link_norm}".encode()).hexdigest(),
                     'is_pinned': is_pinned
                 })
 
         except Exception as e:
             logger.error(f"HTML 파싱 실패: {e}")
 
+        before = len(notices)
+        notices = self._dedupe_notices(notices)
+        after = len(notices)
+        if after < before:
+            logger.info(f"중복 제거: {before} → {after} (−{before - after})")
         return notices
     
     def _group_by_category(self, notices):
@@ -420,6 +429,12 @@ class WebsiteMonitor:
         if new_notices:
             logger.info(f"{name}: {len(new_notices)}개의 새 공지사항 발견")
             self.send_slack_notification(name, new_notices)
+
+            # 새로 본 해시 적용 직후 한 번 저장
+            try:
+                self.save_previous_data()
+            except Exception as e:
+                logger.warning(f"임시 저장 실패: {e}")
         else:
             logger.info(f"{name}: 새 공지사항 없음")
 
@@ -499,6 +514,36 @@ class WebsiteMonitor:
         # 시끄러운 서드파티 로거 소음 낮추기
         logging.getLogger("urllib3").setLevel(logging.WARNING)
         logging.getLogger("WDM").setLevel(logging.WARNING)  # webdriver_manager
+
+    def _normalize_title(self, t: str) -> str:
+        # 공백/개행 정리
+        return re.sub(r'\s+', ' ', (t or '')).strip()
+
+    def _normalize_url(self, u: str) -> str:
+        """쿼리 파라미터 순서·중복을 정리하고, 끝 슬래시 제거"""
+        if not u:
+            return u
+        s = urlsplit(u)
+        # keep_blank_values=True로 빈 값도 유지, 정렬해서 순서 고정
+        q = urlencode(sorted(parse_qsl(s.query, keep_blank_values=True)))
+        path = re.sub(r'/+$', '', s.path or '')
+        return urlunsplit((s.scheme, s.netloc, path, q, ''))
+
+    def _dedupe_notices(self, items):
+        """제목+링크(정규화)로 중복 제거. 하나라도 고정이면 is_pinned=True로 병합."""
+        by_key = {}
+        order = []
+        for n in items:
+            key = (self._normalize_title(n.get('title')), self._normalize_url(n.get('link')))
+            if key not in by_key:
+                by_key[key] = n
+                order.append(key)
+            else:
+                # 병합: 고정 여부는 OR
+                if n.get('is_pinned'):
+                    by_key[key]['is_pinned'] = True
+                # 필요하면 views/date 등 최신값으로 갱신하는 로직도 여기에 추가 가능
+        return [by_key[k] for k in order]
 
     def _graceful_exit(self, signum, frame):
         logger.info(f"종료 신호 수신({signum}) → 상태 저장 및 자원 정리")
