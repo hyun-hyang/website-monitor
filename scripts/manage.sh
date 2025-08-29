@@ -1,36 +1,31 @@
 #!/usr/bin/env bash
-# scripts/manage.sh  (repo-root 기준 경로 고정)
-
+# scripts/manage.sh
 export LANG=en_US.UTF-8
 export LC_CTYPE=ko_KR.UTF-8
 unset LC_ALL
 
 set -euo pipefail
 
-# ---- 경로 고정: scripts/.. = repo root ----
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PIDDIR="$ROOT/run"
+LOGDIR="$ROOT/logs"
+PIDFILE="$PIDDIR/website-monitor.pid"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
-# ---- 환경 변수(.env) 로드: repo root ----
-set -a
-[ -f "${ROOT}/.env" ] && source "${ROOT}/.env"
-set +a
+mkdir -p "$PIDDIR" "$LOGDIR"
 
-# ---- 디렉토리/파일 경로 (전부 루트 기준) ----
-PIDDIR="${ROOT}/run"
-LOGDIR="${ROOT}/logs"
-PIDFILE="${PIDDIR}/website-monitor.pid"
-LOCKFILE="${PIDDIR}/website-monitor.lock"
-PYTHON_BIN="${PYTHON_BIN:-python3}"      # 필요 시 venv 경로로 바꿔 사용
-ENTRY_PY="${ROOT}/src/website_monitor.py"
-DAEMON_LOG="${LOGDIR}/daemon.log"
-
-mkdir -p "${PIDDIR}" "${LOGDIR}"
+# .env 로드 (선택)
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ROOT/.env"
+  set +a
+fi
 
 is_running() {
-  if [[ -f "${PIDFILE}" ]]; then
+  if [[ -f "$PIDFILE" ]]; then
     local pid
-    pid="$(cat "${PIDFILE}" 2>/dev/null || true)"
+    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
     [[ -n "${pid}" ]] && ps -p "${pid}" >/dev/null 2>&1
   else
     return 1
@@ -39,51 +34,41 @@ is_running() {
 
 start() {
   if is_running; then
-    echo "Already running (PID $(cat "${PIDFILE}"))."
+    echo "Already running (PID $(cat "$PIDFILE"))."
     exit 0
   fi
-  if [[ ! -f "${ENTRY_PY}" ]]; then
-    echo "Entry script not found: ${ENTRY_PY}" >&2
-    exit 1
-  fi
   echo "Starting website-monitor (daemon mode)..."
-  # flock으로 중복 실행 방지. 백그라운드 PID를 pidfile에 기록
-  nohup flock -n "${LOCKFILE}" ${PYTHON_BIN} "${ENTRY_PY}" >> "${DAEMON_LOG}" 2>&1 &
-  echo $! > "${PIDFILE}"
-  echo "Started. PID $(cat "${PIDFILE}"). Logs: ${DAEMON_LOG}"
+  # 외부 flock 제거 — 파이썬 내부 fcntl lock(instance.lock) 사용
+  nohup "$PYTHON_BIN" "$ROOT/src/website_monitor.py" >> "$LOGDIR/daemon.log" 2>&1 &
+  echo $! > "$PIDFILE"
+  echo "Started. PID $(cat "$PIDFILE"). Logs: $LOGDIR/daemon.log"
 }
 
 stop() {
   if ! is_running; then
     echo "Not running."
-    rm -f "${PIDFILE}" "${LOCKFILE}" || true
+    rm -f "$PIDFILE" || true
     exit 0
   fi
   local pid
-  pid="$(cat "${PIDFILE}")"
-  echo "Stopping PID ${pid} ..."
-  kill -TERM "${pid}" || true
-
-  # 최대 10초 대기
+  pid="$(cat "$PIDFILE")"
+  echo "Stopping PID $pid ..."
+  kill -TERM "$pid" || true
   for _ in {1..10}; do
-    if ! ps -p "${pid}" >/dev/null 2>&1; then
-      break
-    fi
+    ps -p "$pid" >/dev/null 2>&1 || break
     sleep 1
   done
-
-  if ps -p "${pid}" >/dev/null 2>&1; then
+  if ps -p "$pid" >/dev/null 2>&1; then
     echo "Force kill..."
-    kill -KILL "${pid}" || true
+    kill -KILL "$pid" || true
   fi
-
-  rm -f "${PIDFILE}" "${LOCKFILE}" || true
+  rm -f "$PIDFILE" || true
   echo "Stopped."
 }
 
 status() {
   if is_running; then
-    echo "Running (PID $(cat "${PIDFILE}"))."
+    echo "Running (PID $(cat "$PIDFILE"))."
     return 0
   else
     echo "Not running."
@@ -92,21 +77,16 @@ status() {
 }
 
 restart() { stop || true; start; }
-
-logs() {
-  /usr/bin/tail -n 200 -f "${DAEMON_LOG}"
-}
-
-usage() {
-  echo "Usage: $0 {start|stop|restart|status|logs}"
-  exit 1
-}
+logs()    { /usr/bin/tail -n 200 -f "$LOGDIR/daemon.log"; }
 
 case "${1:-}" in
-  start)   start ;;
-  stop)    stop ;;
+  start) start ;;
+  stop) stop ;;
   restart) restart ;;
-  status)  status ;;
-  logs)    logs ;;
-  *)       usage ;;
+  status) status ;;
+  logs) logs ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|status|logs}"
+    exit 1
+    ;;
 esac

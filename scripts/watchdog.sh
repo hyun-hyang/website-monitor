@@ -1,28 +1,30 @@
 #!/usr/bin/env bash
-# scripts/watchdog.sh  (repo-root 기준, manage.sh 호출)
+# scripts/watchdog.sh  (repo-root 기준)
 
 set -euo pipefail
 
-# ---- 경로 고정: scripts/.. = repo root ----
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 MANAGE="${ROOT}/scripts/manage.sh"
 PIDDIR="${ROOT}/run"
 PIDFILE="${PIDDIR}/website-monitor.pid"
-LOCKFILE="${PIDDIR}/website-monitor.lock"
 ENTRY_PY="${ROOT}/src/website_monitor.py"
+ENTRY_BASENAME="$(basename "$ENTRY_PY")"
+
+# STRICT_KILL=1 이면 중복 인스턴스(고아) 강제 종료
+STRICT_KILL="${STRICT_KILL:-0}"
 
 cd "${ROOT}"
 
-# 1) manage.sh status로 1차 판단 (exit 0/1 활용)
+# 1) manage.sh status 로 1차 판단
 if ! "${MANAGE}" status >/dev/null 2>&1; then
   echo "[watchdog] not running -> start"
   "${MANAGE}" start
   exit 0
 fi
 
-# 2) 래퍼 PID 확인 (flock 래퍼 PID)
+# 2) 래퍼 PID 확인
 WRAP_PID="$(sed -n '1p' "${PIDFILE}" 2>/dev/null || true)"
 if [[ -z "${WRAP_PID:-}" ]] || ! ps -p "${WRAP_PID}" >/dev/null 2>&1; then
   echo "[watchdog] wrapper pid missing/dead -> restart"
@@ -30,34 +32,49 @@ if [[ -z "${WRAP_PID:-}" ]] || ! ps -p "${WRAP_PID}" >/dev/null 2>&1; then
   exit 0
 fi
 
-# 3) 본체 파이썬 프로세스 점검
-#    - 전체에서 우리가 띄운 website_monitor.py가 몇 개인지
-#    - wrapper의 자식 중 website_monitor.py가 있는지
-PYS_ALL=($(pgrep -f "${ENTRY_PY}" || true))
+# 2.5) WRAP_PID 자체가 python(ENTRY_PY)을 실행 중이면 OK
+if ps -o args= -p "${WRAP_PID}" 2>/dev/null | grep -Fq "${ENTRY_PY}"; then
+  echo "[watchdog] OK (wrapper is python: ${WRAP_PID})"
+  exit 0
+fi
 
-# wrapper의 직/간접 자식들 중에서 website_monitor.py 추적
-# (직계만 보면 중간에 shell/flake 등이 있을 수 있어 -a로 커맨드까지 잡고 grep)
-PYS_CHILD=($(
-  pgrep -P "${WRAP_PID}" -a 2>/dev/null \
-    | grep -F "${ENTRY_PY}" \
-    | awk '{print $1}' || true
-))
-
-if (( ${#PYS_CHILD[@]} == 0 )); then
-  echo "[watchdog] wrapper is alive but no child python -> restart"
+# 3) 래퍼의 프로세스 그룹에서 본체 파이썬 유무 확인
+#    - pgid를 구해 같은 그룹 내에서 website_monitor.py 를 찾음
+PGID="$(ps -o pgid= -p "${WRAP_PID}" | awk '{print $1}')"
+if [[ -z "${PGID:-}" ]]; then
+  echo "[watchdog] cannot get PGID -> restart"
   "${MANAGE}" restart
   exit 0
 fi
 
-if (( ${#PYS_ALL[@]} > 1 )); then
-  echo "[watchdog] multiple website_monitor.py detected -> cleanup orphans"
-  for PID in "${PYS_ALL[@]}"; do
-    # wrapper 자식이 아닌 프로세스는 고아로 간주하고 종료
-    if ! printf '%s\n' "${PYS_CHILD[@]}" | grep -qx "${PID}"; then
-      echo " - killing orphan ${PID}"
-      kill -TERM "${PID}" 2>/dev/null || true
-    fi
-  done
+# 같은 PGID의 프로세스 목록에서 엔트리 매칭(경로/베이스네임 둘 다 시도)
+mapfile -t PYS_IN_GROUP < <(
+  ps -o pid=,cmd= -g "${PGID}" 2>/dev/null \
+  | grep -E "[p]ython.*(${ENTRY_PY//\//\\/}|${ENTRY_BASENAME})" \
+  | awk '{print $1}'
+)
+
+if (( ${#PYS_IN_GROUP[@]} == 0 )); then
+  echo "[watchdog] wrapper alive but no python child in PG(${PGID}) -> restart"
+  "${MANAGE}" restart
+  exit 0
 fi
 
-echo "[watchdog] OK (wrapper ${WRAP_PID}, child ${PYS_CHILD[*]})"
+# (선택) 시스템 전체에서 같은 엔트리 다중 실행 여부 체크
+mapfile -t PYS_ALL < <(pgrep -f "${ENTRY_BASENAME}" || true)
+if (( ${#PYS_ALL[@]} > ${#PYS_IN_GROUP[@]} )); then
+  if [[ "${STRICT_KILL}" == "1" ]]; then
+    echo "[watchdog] multiple instances detected -> killing orphans"
+    for PID in "${PYS_ALL[@]}"; do
+      # 우리 PGID 내의 프로세스는 건드리지 않음
+      if ! ps -o pgid= -p "$PID" | grep -q "^\s*${PGID}\s*$"; then
+        echo " - kill -TERM $PID"
+        kill -TERM "$PID" 2>/dev/null || true
+      fi
+    done
+  else
+    echo "[watchdog] warning: multiple instances detected (leaving them untouched)"
+  fi
+fi
+
+echo "[watchdog] OK (wrapper ${WRAP_PID}, pgid ${PGID}, child(s) ${PYS_IN_GROUP[*]})"
