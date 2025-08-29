@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+export LANG=en_US.UTF-8
+export LC_CTYPE=ko_KR.UTF-8
+unset LC_ALL
+
 set -a
 [ -f "$(dirname "$0")/.env" ] && source "$(dirname "$0")/.env"
 set +a

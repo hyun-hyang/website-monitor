@@ -20,6 +20,7 @@ from logging.handlers import TimedRotatingFileHandler
 import signal
 import sys
 from dotenv import load_dotenv
+import fcntl
 
 
 # 로깅 설정
@@ -64,6 +65,17 @@ class WebsiteMonitor:
         self.previous_data = self.load_previous_data()
         self.driver = None
         self._cd_log_file = None
+
+        self.RUN_DIR = os.path.join(self.BASE_DIR, "run")
+        os.makedirs(self.RUN_DIR, exist_ok=True)
+        self._instance_lock_fp = open(os.path.join(self.RUN_DIR, "instance.lock"), "w")
+
+        try:
+            fcntl.lockf(self._instance_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # 잠금 성공 → 계속 진행
+        except OSError:
+            logger.error("이미 실행 중입니다(파일락 획득 실패). 종료합니다.")
+            sys.exit(1)
         
     def setup_selenium_driver(self):
         """Selenium 드라이버 설정 (자동 설치)"""
