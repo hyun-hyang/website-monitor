@@ -22,6 +22,7 @@ import sys
 from dotenv import load_dotenv
 import fcntl
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+from slack_sdk import WebClient
 
 
 # 로깅 설정
@@ -355,51 +356,57 @@ class WebsiteMonitor:
         return datetime.now().strftime('%Y-%m-%d')
 
     def send_slack_notification(self, website_name, new_notices):
-        webhook_url = self.config['slack_webhook_url']
-        if webhook_url == "YOUR_SLACK_WEBHOOK_URL_HERE":
-            logger.warning("슬랙 웹훅 URL이 없습니다. .env의 SLACK_WEBHOOK_URL 또는 config.json을 설정하세요.")
-            return
+        bot_token = os.getenv("SLACK_BOT_TOKEN")
+        channel_id = os.getenv("SLACK_CHANNEL_ID")
+        webhook_url = self.config.get("slack_webhook_url")
 
-        try:
-            show_date = bool(self.config.get("slack_show_date", True))
-            show_views = bool(self.config.get("slack_show_views", True))
+        # 공통 blocks 생성
+        show_date = bool(self.config.get("slack_show_date", True))
+        show_views = bool(self.config.get("slack_show_views", True))
+        keys, groups = self._group_by_category(new_notices)
 
-            keys, groups = self._group_by_category(new_notices)
+        blocks = [{
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"📢 {website_name} 새 공지사항"}
+        }]
+        for cat in keys:
+            if cat:
+                blocks.append({"type": "section","text": {"type": "mrkdwn","text": f"*{cat}*"}})
+            for n in groups[cat]:
+                title_disp = f"🌟 {n['title']}" if n.get('is_pinned') else n['title']
+                date_txt  = f"📅 {n['date']}" if (show_date and n.get('date')) else ""
+                views_txt = f"Views {n['views']}" if (show_views and n.get('views')) else ""
+                meta = "   ".join([t for t in [date_txt, views_txt] if t])
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn",
+                            "text": f"• <{n['link']}|{title_disp}>" + (f"\n   {meta}" if meta else "")}
+                })
 
-            blocks = [{
-                "type": "header",
-                "text": {"type": "plain_text", "text": f"📢 {website_name} 새 공지사항"}
-            }]
+        # 1) Bot 토큰이 있으면 chat.postMessage로 보냄 → 나중에 chat.delete 가능
+        if bot_token and channel_id:
+            try:
+                client = WebClient(token=bot_token)
+                resp = client.chat_postMessage(channel=channel_id,
+                                            text=f"🔔 *{website_name}*에 새로운 공지사항!",
+                                            blocks=blocks)
+                self._last_post_ts = resp["ts"]  # 원하면 저장해서 추후 바로 삭제 가능
+                logger.info(f"슬랙(봇) 전송 완료: {len(new_notices)}개 (ts={resp['ts']})")
+                return
+            except Exception as e:
+                logger.error(f"슬랙 봇 전송 실패: {e}")
 
-            for cat in keys:
-                if cat:  # 빈 카테고리는 소제목 스킵
-                    blocks.append({
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"*{cat}*"}
-                    })
-
-                for n in groups[cat]:
-                    # 고정글이면 제목 앞에 이모지
-                    title_disp = f"🌟 {n['title']}" if n.get('is_pinned') else n['title']
-
-                    date_txt = f"📅 {n['date']}" if (show_date and n.get('date')) else ""
-                    views_txt = f"Views {n['views']}" if (show_views and n.get('views')) else ""
-                    meta = "   ".join([t for t in [date_txt, views_txt] if t])
-
-                    blocks.append({
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": f"• <{n['link']}|{title_disp}>" + (f"\n   {meta}" if meta else "")
-                        }
-                    })
-
-            payload = {"text": f"🔔 *{website_name}*에 새로운 공지사항!", "blocks": blocks}
-            resp = requests.post(webhook_url, json=payload)
-            resp.raise_for_status()
-            logger.info(f"슬랙 알림 전송 완료: {len(new_notices)}개 (카테고리 {len(keys)}개)")
-        except requests.RequestException as e:
-            logger.error(f"슬랙 알림 전송 실패: {e}")
+        # 2) 폴백: 웹훅
+        if webhook_url and webhook_url != "YOUR_SLACK_WEBHOOK_URL_HERE":
+            try:
+                payload = {"text": f"🔔 *{website_name}*에 새로운 공지사항!", "blocks": blocks}
+                r = requests.post(webhook_url, json=payload)
+                r.raise_for_status()
+                logger.info(f"슬랙(웹훅) 전송 완료: {len(new_notices)}개")
+            except requests.RequestException as e:
+                logger.error(f"슬랙 웹훅 전송 실패: {e}")
+        else:
+            logger.warning("슬랙 전송 경로가 없습니다(Bot 토큰/채널 또는 Webhook URL 설정 필요).")
     
     def check_website(self, website_config):
         if not website_config.get('enabled', True):
