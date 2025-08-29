@@ -5,6 +5,13 @@
 Selenium(옵션) + Requests로 페이지를 가져오고, 제목/URL 정규화와 중복 제거 로직으로 중복 알림을 최소화합니다.
 실행은 manage.sh(데몬 모드) + 선택적 cron을 사용합니다.
 
+## 요구 사항
+
+- Python 3.9+
+- Google Chrome (Selenium 사용하는 경우)
+- pip 패키지: -r requirements.txt
+
+
 ## 주요 기능
 
 -	정적/동적 페이지 크롤링 (requests + BeautifulSoup, Selenium)
@@ -24,9 +31,13 @@ Selenium(옵션) + Requests로 페이지를 가져오고, 제목/URL 정규화�
 ```bash
 git clone https://github.com/hyun-hyang/website-monitor.git
 cd website-monitor
-python3 -m venv .venv && source .venv/bin/activate    # 선택
+
+# 가상환경 (권장)
+python3 -m venv .venv
+source .venv/bin/activate
+
 pip install -r requirements.txt
-cp .env.example .env                                  # 없으면 직접 생성
+cp .env.example .env     # 없으면 직접 생성
 ```
 
 - env 예시:
@@ -51,11 +62,11 @@ Tip: Webhook 대신 Bot 토큰을 쓰면, 잘못 보낸 메시지도 chat.delete
 
 ### 1) 데몬 모드 (추천)
 ```bash
-./manage.sh start     # 백그라운드 실행
-./manage.sh status    # 상태 확인
-./manage.sh logs      # 실시간 로그 보기 (daemon.log tail)
-./manage.sh stop      # 중지
-./manage.sh restart   # 재시작
+./scripts/manage.sh start     # 백그라운드 실행
+./scripts/manage.sh status    # 상태 확인
+./scripts/manage.sh logs      # 실시간 로그 보기 (daemon.log tail)
+./scripts/manage.sh stop      # 중지
+./scripts/manage.sh restart   # 재시작
 ```
 - 중복 실행 방지: run/instance.lock 파일락 사용
 - 로그:
@@ -66,7 +77,7 @@ Tip: Webhook 대신 Bot 토큰을 쓰면, 잘못 보낸 메시지도 chat.delete
 ### 2) 1회 실행
 
 ```bash
-python3 website_monitor.py once
+python3 src/website_monitor.py once
 ```
 ---
 
@@ -78,8 +89,11 @@ crontab -e 에 아래 추가:
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-@reboot  cd /home/<user>/website-monitor && ./manage.sh start >> logs/cron.log 2>&1
-*/5 * * * * cd /home/<user>/website-monitor && ./manage.sh status >/dev/null 2>&1 || ( ./manage.sh start >> logs/cron.log 2>&1 )
+# 재부팅 시 자동 실행
+@reboot  cd /home/<user>/website-monitor && ./scripts/manage.sh start >> logs/cron.log 2>&1
+
+# 5분마다 헬스체크 후 꺼져 있으면 재시작
+*/5 * * * * cd /home/<user>/website-monitor && ./scripts/watchdog.sh >> logs/cron.log 2>&1
 ```
 
 - 재부팅 시 자동 시작.
@@ -174,21 +188,29 @@ Slack의 Webhook으로 보낸 메시지는 삭제할 수 없습니다. 봇으로
 
 ```
 website-monitor/
-├─ website_monitor.py       # 메인 실행
-├─ manage.sh                # 데몬 관리
-├─ watchdog.sh              # (선택) 헬스체크
-├─ slack_delete_tool.py     # 조건 검색 삭제
-├─ slack_delete_ts.py       # 특정 ts 삭제
-├─ config.json              # 사이트 설정
-├─ previous_data.json       # 본 글 해시 저장
+├─ src/
+│  └─ website_monitor.py    # 메인 실행 파일
+├─ scripts/
+│  ├─ manage.sh             # 데몬 관리
+│  └─ watchdog.sh           # 감시/자동재시작
+├─ config/
+│  └─ config.json           # 사이트 설정
+├─ data/
+│  └─ previous_data.json    # 본 글 해시 저장
 ├─ logs/
-│  ├─ app.log               # 애플리케이션 로그
+│  ├─ app.log               # 애플리케이션 로그 (로테이션)
 │  └─ chromedriver.log      # ChromeDriver 로그
 ├─ run/
-│  └─ instance.lock         # 중복 실행 방지
-└─ .env                     # 환경변수
+│  └─ instance.lock         # 중복 실행 방지 파일락
+├─ .env                     # 환경변수
+└─ README.md
 ```
-logs/, run/, previous_data.json → .gitignore 권장
+- gitignore 예시
+```
+logs/
+run/
+data/previous_data.json
+```
 
 ---
 

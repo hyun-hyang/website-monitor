@@ -226,3 +226,15 @@ logs/
 run/
 previous_data.json
 __pycache__/
+
+# runtime
+/run/
+/logs/
+/data/previous_data.json
+
+# python
+__pycache__/
+/*.pyc
+/.venv/
+
+/.env

@@ -8,6 +8,11 @@ from dotenv import load_dotenv
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+from pathlib import Path
+ROOT_DIR = Path(__file__).resolve().parents[2]    # src/slack → src → <repo>
+from dotenv import load_dotenv
+load_dotenv(ROOT_DIR / ".env")
+
 def load_ts_from_file(path: str) -> List[str]:
     items = []
     with open(path, "r", encoding="utf-8") as f:

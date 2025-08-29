@@ -12,6 +12,11 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
 
+from pathlib import Path
+ROOT_DIR = Path(__file__).resolve().parents[2]    # src/slack → src → <repo>
+from dotenv import load_dotenv
+load_dotenv(ROOT_DIR / ".env")
+
 
 def parse_time(v: Optional[str]) -> Optional[float]:
     """
