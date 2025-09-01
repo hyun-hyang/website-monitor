@@ -26,6 +26,7 @@ import fcntl
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from slack_sdk import WebClient
 from pathlib import Path
+import html
 
 # ---------- 경로/환경: 루트 기준으로 통일 ----------
 ROOT_DIR   = Path(__file__).resolve().parents[1]   # <repo>/src → <repo>
@@ -344,6 +345,10 @@ class WebsiteMonitor:
                 if n.get('is_pinned'):
                     by_key[key]['is_pinned'] = True
         return [by_key[k] for k in order]
+    
+    def _escape_mrkdwn_text(s: str) -> str:
+        # Slack mrkdwn-safe: & < > → 엔티티
+        return html.escape(s or "", quote=False)
 
     # ---------- Slack ----------
     def send_slack_notification(self, website_name, new_notices):
@@ -363,14 +368,16 @@ class WebsiteMonitor:
             if cat:
                 blocks.append({"type": "section","text": {"type": "mrkdwn","text": f"*{cat}*"}})
             for n in groups[cat]:
-                title_disp = f"🌟 {n['title']}" if n.get('is_pinned') else n['title']
-                date_txt  = f"📅 {n['date']}"  if (show_date and n.get('date')) else ""
+                title_disp = f"🌟 {self._escape_mrkdwn_text(n['title'])}" if n.get('is_pinned') else self._escape_mrkdwn_text(n['title'])
+                date_txt  = f"📅 {n['date']}" if (show_date and n.get('date')) else ""
                 views_txt = f"Views {n['views']}" if (show_views and n.get('views')) else ""
                 meta = "   ".join([t for t in [date_txt, views_txt] if t])
                 blocks.append({
                     "type": "section",
-                    "text": {"type": "mrkdwn",
-                             "text": f"• <{n['link']}|{title_disp}>" + (f"\n   {meta}" if meta else "")}
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"• <{n['link']}|{title_disp}>" + (f"\n   {meta}" if meta else "")
+                    }
                 })
 
         if bot_token and channel_id:
