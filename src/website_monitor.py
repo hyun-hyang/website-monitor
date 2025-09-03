@@ -26,7 +26,6 @@ import fcntl
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from slack_sdk import WebClient
 from pathlib import Path
-import html
 
 # ---------- 경로/환경: 루트 기준으로 통일 ----------
 ROOT_DIR   = Path(__file__).resolve().parents[1]   # <repo>/src → <repo>
@@ -178,7 +177,7 @@ class WebsiteMonitor:
             headers = {'User-Agent': self.config['user_agent']}
         for attempt in (1, 2):
             try:
-                r = requests.get(url, headers=headers, timeout=10)
+                r = requests.get(url, headers=headers, timeout=20)
                 r.raise_for_status()
                 return r.text
             except requests.RequestException as e:
@@ -346,9 +345,15 @@ class WebsiteMonitor:
                     by_key[key]['is_pinned'] = True
         return [by_key[k] for k in order]
     
-    def _escape_mrkdwn_text(s: str) -> str:
-        # Slack mrkdwn-safe: & < > → 엔티티
-        return html.escape(s or "", quote=False)
+    def _escape_mrkdwn_text(self, text: str) -> str:
+        """Slack mrkdwn에서 깨질 수 있는 특수문자 이스케이프"""
+        if not text:
+            return ""
+        return (
+            text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+        )
 
     # ---------- Slack ----------
     def send_slack_notification(self, website_name, new_notices):
