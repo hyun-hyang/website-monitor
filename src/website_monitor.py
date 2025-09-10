@@ -445,7 +445,7 @@ class WebsiteMonitor:
         else:
             logger.info(f"{name}: 새 공지사항 없음")
 
-        site_data["hashes"] = list(curr_hashes)[:50]
+        site_data["hashes"] = list(curr_hashes)[:200]
         self.previous_data[site_key] = site_data
 
     def run_once(self):
