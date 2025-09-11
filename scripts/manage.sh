@@ -38,6 +38,9 @@ start() {
     exit 0
   fi
   echo "Starting website-monitor (daemon mode)..."
+
+  "${ROOT}/scripts/install_browser.sh"
+  
   # 외부 flock 제거 — 파이썬 내부 fcntl lock(instance.lock) 사용
   nohup "$PYTHON_BIN" "$ROOT/src/website_monitor.py" >> "$LOGDIR/daemon.log" 2>&1 &
   echo $! > "$PIDFILE"
