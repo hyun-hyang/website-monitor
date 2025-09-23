@@ -481,6 +481,8 @@ class WebsiteMonitor:
                 except Exception as e:
                     logger.error(f"예상치 못한 오류: {e}")
                     time.sleep(60)
+                finally:
+                    self.close_selenium_driver()   # 강제 정리
         finally:
             self.close_selenium_driver()
 
