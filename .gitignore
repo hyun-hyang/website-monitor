@@ -238,3 +238,5 @@ __pycache__/
 /.venv/
 
 /.env
+
+.requirements-freeze.txt

@@ -1,130 +1,81 @@
 # Website Monitor 🔍
 
-공지사항 페이지를 주기적으로 크롤링해 Slack으로 새 글을 알리는 경량 모니터링 도구입니다.
+대학교 공지사항 페이지를 주기적으로 크롤링해 **Slack으로 새 글을 실시간 알림**하는 모니터링 도구입니다.
 
-Selenium(옵션) + Requests로 페이지를 가져오고, 제목/URL 정규화와 중복 제거 로직으로 중복 알림을 최소화합니다.
-실행은 manage.sh(데몬 모드) + 선택적 cron을 사용합니다.
+<img src="https://img.shields.io/badge/Python-3.9+-blue" alt="Python"> <img src="https://img.shields.io/badge/Slack-Block%20Kit-4A154B" alt="Slack">
 
-## 요구 사항
+### 핵심 동작
 
-- Python 3.9+
-- Google Chrome (Selenium 사용하는 경우)
-- pip 패키지: -r requirements.txt
+```
+공지사항 페이지 크롤링 → 새 글 감지 (해시 비교) → Slack 알림 전송
+```
 
-
-## 주요 기능
-
--	정적/동적 페이지 크롤링 (requests + BeautifulSoup, Selenium)
--	webdriver-manager 기반 ChromeDriver 자동 설치
--	제목+링크 해시 기반 중복 제거
--	카테고리 그룹핑 + Slack Block Kit 알림
--	상단 고정글(cate00/top-notice) 감지 시 🌟 표시
--	로그 자동 회전 (자정 기준, 7일 보관)
--	지속 실행 모드 / 1회 실행 모드 지원
--	manage.sh로 시작/중지/상태/로그 관리
--	재부팅 후 자동 실행 가능 (cron @reboot)
+- **정적 페이지**: Requests + BeautifulSoup
+- **동적 페이지** (JS 렌더링): Selenium (headless Chrome)
+- **알림**: Slack Block Kit 포맷, 카테고리별 그룹핑
 
 ---
 
-## 설치 & 준비
+## 빠른 시작
 
 ```bash
 git clone https://github.com/hyun-hyang/website-monitor.git
 cd website-monitor
-
-# 가상환경 (권장)
-python3 -m venv .venv
-source .venv/bin/activate
-
 pip install -r requirements.txt
-cp .env.example .env     # 없으면 직접 생성
 ```
 
-- env 예시:
+### 환경변수 설정
+
+`.env` 파일을 생성하고 Slack 인증 정보를 입력합니다.
 
 ```env
-# (권장) Slack Bot 사용 시 – chat.postMessage/chat.delete 등을 쓰려면 필수
-SLACK_BOT_TOKEN=xoxb-...
-
-# Bot이 메시지 보낼 채널 ID (예: C0123456789)
-SLACK_CHANNEL_ID=C...
-
-# (옵션) Webhook으로도 보낼 수 있는 폴백 경로
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
-
-# (옵션) HTTP 요청/셀레니움 User-Agent 오버라이드
-USER_AGENT=Mozilla/5.0 ...
+SLACK_BOT_TOKEN=xoxb-...          # Slack Bot 토큰 (필수)
+SLACK_CHANNEL_ID=C0123456789      # 알림 채널 ID (필수)
+SLACK_WEBHOOK_URL=https://...     # Webhook 폴백 (선택)
+USER_AGENT=Mozilla/5.0 ...       # User-Agent 오버라이드 (선택)
 ```
-Tip: Webhook 대신 Bot 토큰을 쓰면, 잘못 보낸 메시지도 chat.delete로 삭제할 수 있습니다.
 
----
-## 실행 방법
+> **Tip**: Bot 토큰을 쓰면 잘못 보낸 메시지를 `chat.delete`로 삭제할 수 있습니다.
 
-### 1) 데몬 모드 (추천)
-```bash
-./scripts/manage.sh start     # 백그라운드 실행
-./scripts/manage.sh status    # 상태 확인
-./scripts/manage.sh logs      # 실시간 로그 보기 (daemon.log tail)
-./scripts/manage.sh stop      # 중지
-./scripts/manage.sh restart   # 재시작
-```
-- 중복 실행 방지: run/instance.lock 파일락 사용
-- 로그:
-  - logs/daemon.log : 데몬 표준출력
-	- logs/app.log : 애플리케이션 로그 (자정 기준 로그 로테이션, 7일 보관)
-	-	logs/chromedriver.log : ChromeDriver 로그
-
-### 2) 1회 실행
+### 실행
 
 ```bash
+# 감시 모드 — 크래시 시 자동 재시작, 중복 실행 방지
+nohup ./scripts/supervise.sh >> ./logs/supervise.log 2>&1 &
+
+# 1회 실행
 python3 src/website_monitor.py once
 ```
----
 
-## 부팅 시 자동 시작 + 헬스체크 (선택)
+### 워크스페이스 재시작 시 자동 실행
 
-crontab -e 에 아래 추가:
-
-```cron
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-# 재부팅 시 자동 실행
-@reboot  cd /home/<user>/website-monitor && ./scripts/manage.sh start >> logs/cron.log 2>&1
-
-# 5분마다 헬스체크 후 꺼져 있으면 재시작
-*/5 * * * * cd /home/<user>/website-monitor && ./scripts/watchdog.sh >> logs/cron.log 2>&1
-```
-
-- 재부팅 시 자동 시작.
-- 매 5분마다 status 확인 후 꺼져 있으면 자동 재기동.
-
----
-
-## Chrome / ChromeDriver
-
-Selenium 사용 시 Chrome 필요.
-webdriver-manager가 자동으로 맞는 버전의 ChromeDriver를 내려받습니다.
-
-### Debian/Ubuntu 설치 예시
+`~/personalize` 스크립트에 등록하면 Coder 워크스페이스 시작 시 자동 실행됩니다.
 
 ```bash
-# Chrome 설치
-wget -qO- https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | \
-  sudo tee /etc/apt/sources.list.d/google-chrome.list
-sudo apt-get update
-sudo apt-get install -y google-chrome-stable
-
-# 기타 의존 패키지
-sudo apt-get install -y fonts-noto-cjk libnss3 libxss1 libasound2 unzip xdg-utils
+#!/bin/bash
+setsid bash -c 'cd /home/jylim3060/website-monitor && exec ./scripts/supervise.sh >> ./logs/supervise.log 2>&1' < /dev/null > /dev/null 2>&1 &
 ```
 
 ---
 
-## 설정 파일
+## 주요 기능
 
--	config.json – 사이트별 설정
+| 기능 | 설명 |
+|------|------|
+| 정적/동적 크롤링 | Requests + BeautifulSoup, Selenium 자동 전환 |
+| 중복 제거 | 제목+링크 MD5 해시 비교 (사이트당 최대 200개 추적) |
+| Slack 알림 | Block Kit 포맷, 카테고리별 그룹핑 |
+| 고정글 감지 | 상단 고정 공지에 🌟 표시 |
+| 자동 재시작 | 크래시 시 지수 백오프 (5초 → 최대 5분) 후 재시작 |
+| 로그 로테이션 | 자정 기준 회전, 7일 보관 |
+
+---
+
+## 설정
+
+### `config/config.json`
+
+사이트별 크롤링 설정을 정의합니다.
 
 ```json
 {
@@ -138,49 +89,69 @@ sudo apt-get install -y fonts-noto-cjk libnss3 libxss1 libasound2 unzip xdg-util
       "use_selenium": true,
       "wait_selector": "div.cont",
       "wait_timeout": 10,
-      "enabled": true,
-      "max_items": 20
+      "max_items": 20,
+      "enabled": true
     }
   ],
   "check_interval": 300,
   "slack_show_date": true,
-  "slack_show_views": true,
-  "user_agent": "Mozilla/5.0 ..."
+  "slack_show_views": true
 }
 ```
-- .env – 민감 값 관리 (config.json보다 우선 적용)
 
-- previous_data.json – 이미 본 공지 해시 저장 (최대 50개/사이트)
+| 필드 | 설명 | 기본값 |
+|------|------|--------|
+| `selector` | 공지 목록 CSS 선택자 | (필수) |
+| `title_selector` | 제목 요소 선택자 | (필수) |
+| `link_selector` | 링크 요소 선택자 | (필수) |
+| `use_selenium` | JS 렌더링 필요 시 `true` | `false` |
+| `wait_selector` | Selenium 대기 요소 | - |
+| `wait_timeout` | Selenium 대기 시간(초) | `10` |
+| `max_items` | 최대 크롤링 항목 수 | `20` |
+| `check_interval` | 체크 간격(초) | `300` |
+
+### `data/previous_data.json`
+
+이미 감지한 공지 해시를 저장합니다. 자동 생성되며 직접 수정할 필요 없습니다.
+
+---
+
+## 관리
+
+```bash
+# 상태 확인
+ps aux | grep supervise
+
+# 로그 보기
+tail -f logs/app.log           # 애플리케이션 로그
+tail -f logs/supervise.log     # 감시 프로세스 로그
+
+# 중지
+kill $(cat run/supervise.pid)
+
+# 자동 시작 제거
+rm ~/personalize
+```
 
 ---
 
 ## Slack 메시지 삭제 도구
 
-전제: 봇이 chat:write, chat:delete 권한 보유 + 채널 참여 필요.
-Webhook으로 보낸 메시지는 삭제 불가.
+Bot이 보낸 메시지를 조건별로 삭제할 수 있습니다.
+(봇에 `chat:write`, `chat:delete` 권한 필요)
 
-### 1. **조건 검색 후 삭제**: slack_delete_tool.py
+```bash
+# 날짜 범위로 삭제 (DRY-RUN → --yes로 실행)
+python3 src/slack/delete_tool.py --since "2025-08-28 00:00:00" --until "2025-08-28 23:59:59"
+python3 src/slack/delete_tool.py --since "2025-08-28 00:00:00" --until "2025-08-28 23:59:59" --yes
 
+# 텍스트/정규식 필터
+python3 src/slack/delete_tool.py --contains "테스트"
+python3 src/slack/delete_tool.py --regex "공지사항"
 
-``` bash
-# DRY-RUN (날짜 범위)
-python3 slack_delete_tool.py --since "2025-08-28 00:00:00" --until "2025-08-28 23:59:59"
-
-# 실제 삭제
-python3 slack_delete_tool.py --since "2025-08-28 00:00:00" --until "2025-08-28 23:59:59" --yes
-
-# 텍스트 포함 / 정규식
-python3 slack_delete_tool.py --contains "테스트"
-python3 slack_delete_tool.py --regex "공지사항"
+# 특정 메시지 삭제
+python3 src/slack/delete_ts.py --ts=1756181407.518089 --yes
 ```
-
-### 2.	**특정 ts 직접 삭제** : slack_delete_ts.py
-
-``` bash
-python3 slack_delete_ts.py --ts=1756181407.518089     # DRY-RUN
-python3 slack_delete_ts.py --ts=1756181407.518089 --yes
-```
-Slack의 Webhook으로 보낸 메시지는 삭제할 수 없습니다. 봇으로 보낸 메시지만 삭제 가능해요.
 
 ---
 
@@ -189,35 +160,27 @@ Slack의 Webhook으로 보낸 메시지는 삭제할 수 없습니다. 봇으로
 ```
 website-monitor/
 ├─ src/
-│  └─ website_monitor.py    # 메인 실행 파일
+│  ├─ website_monitor.py          # 메인 모니터링 엔진
+│  └─ slack/
+│     ├─ send_manual.py           # 수동 Slack 메시지 전송
+│     ├─ delete_tool.py           # 조건별 메시지 삭제
+│     └─ delete_ts.py             # 특정 메시지 삭제
 ├─ scripts/
-│  ├─ manage.sh             # 데몬 관리
-│  └─ watchdog.sh           # 감시/자동재시작
+│  └─ supervise.sh                # 프로세스 감시 + 자동 재시작
 ├─ config/
-│  └─ config.json           # 사이트 설정
+│  └─ config.json                 # 사이트별 크롤링 설정
 ├─ data/
-│  └─ previous_data.json    # 본 글 해시 저장
-├─ logs/
-│  ├─ app.log               # 애플리케이션 로그 (로테이션)
-│  └─ chromedriver.log      # ChromeDriver 로그
-├─ run/
-│  └─ instance.lock         # 중복 실행 방지 파일락
-├─ .env                     # 환경변수
-└─ README.md
-```
-- gitignore 예시
-```
-logs/
-run/
-data/previous_data.json
+│  └─ previous_data.json          # 감지된 공지 해시 저장
+├─ logs/                          # 로그 (자동 생성)
+├─ run/                           # PID, 락 파일 (자동 생성)
+├─ .env                           # 환경변수 (Slack 토큰 등)
+└─ requirements.txt
 ```
 
 ---
 
 ## 주의사항
 
-- 첫 실행 시 webdriver-manager가 ChromeDriver를 자동 다운로드합니다 (서버에 Chrome 설치 필요).
+- Selenium 사용 시 서버에 **Google Chrome** 설치 필요. ChromeDriver는 `webdriver-manager`가 자동 설치합니다.
 - Selenium 기반 사이트는 CPU/RAM 사용량이 더 높습니다.
-- Slack Webhook URL 및 토큰은 반드시 비공개로 관리하세요.
-
-
+- `.env` 파일은 반드시 비공개로 관리하세요.
