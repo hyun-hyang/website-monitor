@@ -18,6 +18,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.core.os_manager import ChromeType
 from collections import defaultdict
 from logging.handlers import TimedRotatingFileHandler
 import signal
@@ -104,7 +105,15 @@ class WebsiteMonitor:
             cd_log_path = LOG_DIR / "chromedriver.log"
             if self._cd_log_file is None or self._cd_log_file.closed:
                 self._cd_log_file = open(cd_log_path, "a", encoding="utf-8")
-            service = Service(ChromeDriverManager().install(), log_output=self._cd_log_file)
+
+            # Chromium 감지 시 ChromeType.CHROMIUM 사용
+            import shutil
+            if shutil.which("chromium") and not shutil.which("google-chrome-stable"):
+                options.binary_location = shutil.which("chromium")
+                driver_path = ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install()
+            else:
+                driver_path = ChromeDriverManager().install()
+            service = Service(driver_path, log_output=self._cd_log_file)
             self.driver = webdriver.Chrome(service=service, options=options)
             logger.info("ChromeDriver 설정 완료!")
             return self.driver
